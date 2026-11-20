@@ -31,9 +31,11 @@
  */
 package net.fortuna.ical4j.data;
 
+import java.util.Locale;
 import net.fortuna.ical4j.model.*;
 import net.fortuna.ical4j.model.parameter.Value;
 import org.apache.commons.lang3.StringUtils;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.w3c.dom.*;
@@ -264,14 +266,14 @@ public class HCalendarParser implements CalendarParser {
         return elements;
     }
 
-    private static Element findElement(XPathExpression expr, Object context) throws ParserException {
+    private static @Nullable Element findElement(XPathExpression expr, Object context) throws ParserException {
         var n = findNode(expr, context);
         if ((!(n instanceof Element)))
             return null;
         return (Element) n;
     }
 
-    private static String getTextContent(Element element) throws ParserException {
+    private static @Nullable String getTextContent(Element element) throws ParserException {
         try {
             String content = element.getFirstChild().getNodeValue();
             if (content != null) {
@@ -361,7 +363,7 @@ public class HCalendarParser implements CalendarParser {
         handler.endComponent(Component.VEVENT);
     }
 
-    private void buildProperty(Element element, String propName, ContentHandler handler) throws ParserException {
+    private void buildProperty(@Nullable Element element, String propName, ContentHandler handler) throws ParserException {
         if (element == null)
             return;
 
@@ -369,7 +371,7 @@ public class HCalendarParser implements CalendarParser {
             LOG.debug("Building property " + propName);
 
         var className = className(propName);
-        var elementName = element.getLocalName().toLowerCase();
+        var elementName = element.getLocalName().toLowerCase(Locale.ROOT);
 
         String value;
         if (elementName.equals("abbr")) {
@@ -462,7 +464,7 @@ public class HCalendarParser implements CalendarParser {
      */
 
     private static String className(String propName) {
-        return propName.toLowerCase();
+        return propName.toLowerCase(Locale.ROOT);
     }
 
     private static boolean isHeaderElement(String name) {

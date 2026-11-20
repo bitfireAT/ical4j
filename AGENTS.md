@@ -64,8 +64,14 @@ make listApiChanges
 ./gradlew -q currentVersion
 make currentVersion
 
-# Mark next version (for maintainers)
+# Mark next version (for maintainers - optional as will auto-increment)
 make markNextVersion <version>
+
+# Tag and push release
+make release
+
+# Publish release to Maven Central
+make publish
 ```
 
 ## Project Structure
@@ -163,7 +169,7 @@ VEvent event = builder.vevent {
 ### Dependencies
 - **Core**: SLF4J, Commons Lang3, Commons Collections4, ThreeTen-Extra
 - **Optional**: Caffeine (caching), JParsec (expressions), Groovy (DSL)
-- **Test**: Spock, JUnit 5, Hamcrest, Testcontainers
+- **Test**: Spock, JUnit 5, Hamcrest
 
 ### Configuration Files
 - `gradle.properties` - Build configuration
@@ -233,7 +239,7 @@ net.fortuna.ical4j.timezone.update.enabled=true
 - Consider streaming for very large files
 
 ### Build Environment
-- Requires Java 11+ for building
+- Requires Java 17+ for building (Error Prone/NullAway); compiled bytecode targets Java 11
 - Gradle wrapper handles Gradle version
 - Docker available for timezone data updates
 

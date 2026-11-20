@@ -35,6 +35,7 @@ import net.fortuna.ical4j.data.ParserException;
 import net.fortuna.ical4j.util.CompatibilityHints;
 import net.fortuna.ical4j.util.ResourceLoader;
 import org.apache.commons.lang3.Validate;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
@@ -57,6 +58,28 @@ import java.util.regex.Pattern;
  * <p/>
  * The default implementation of a <code>TimeZoneRegistry</code>. This implementation will search the classpath for
  * applicable VTimeZone definitions used to back the provided TimeZone instances.
+ * <p>
+ * Each registered definition normally gets {@link java.time.zone.ZoneRules} built from its own observances and
+ * a synthetic zone id resolved by {@link ZoneRulesProviderImpl}, so date-times follow that definition exactly.
+ * <p>
+ * <b>Fallback mode.</b> Some platforms do not allow a custom {@link java.time.zone.ZoneRulesProvider} to be
+ * installed. Android, for example, blocks its constructor and
+ * {@link java.time.zone.ZoneRulesProvider#registerProvider} as hidden APIs. There
+ * ({@link ZoneRulesProviderImpl#isAvailable()} is false) definitions are still registered and returned by
+ * {@link #getTimeZone(String)}, but no zone rules are built from them. Instead a TZID resolves as if no definition
+ * were registered, via {@link TimeZoneRegistry#getGlobalZoneId(String)}: an Olson id directly, or a name mapped by
+ * the timezone alias tables, including Microsoft/Windows zone names. <em>A definition's own rules are therefore
+ * not applied in fallback mode</em>; a VTIMEZONE whose rules differ from the platform zone of the same name uses the
+ * platform's rules. A TZID with no platform equivalent is handled like any unresolvable TZID: an exception, or
+ * the TZID is ignored under relaxed validation.
+ * <p>
+ * <b>Degenerate definitions.</b> A registered VTIMEZONE with no STANDARD or DAYLIGHT observance is retained in the
+ * same way: the definition is available from {@link #getTimeZone(String)} but no zone rules are built, and its TZID
+ * resolves via {@link TimeZoneRegistry#getGlobalZoneId(String)}. A definition whose observances cannot be turned into
+ * zone rules (for example an observance without DTSTART) is treated the same way when
+ * {@link CompatibilityHints#KEY_RELAXED_PARSING} or {@link CompatibilityHints#KEY_RELAXED_VALIDATION} is enabled;
+ * otherwise registration fails with an {@link IllegalArgumentException} naming the TZID. Structural problems with
+ * a definition are reported by {@link net.fortuna.ical4j.model.component.VTimeZone#validate()} in either case.
  *
  * @author Ben Fortuna
  */
@@ -110,6 +133,8 @@ public class TimeZoneRegistryImpl implements TimeZoneRegistry {
 
     private final boolean lenientTzResolution;
 
+    private final boolean zoneRulesProviderAvailable;
+
     /**
      * Default constructor.
      */
@@ -127,11 +152,21 @@ public class TimeZoneRegistryImpl implements TimeZoneRegistry {
     }
 
     public TimeZoneRegistryImpl(final String resourcePrefix, boolean lenientTzResolution) {
+        this(resourcePrefix, lenientTzResolution, ZoneRulesProviderImpl.isAvailable());
+    }
+
+    /**
+     * @param zoneRulesProviderAvailable false to run in fallback mode, as on a platform where the custom
+     *                                   {@link java.time.zone.ZoneRulesProvider} cannot be installed
+     */
+    TimeZoneRegistryImpl(final String resourcePrefix, boolean lenientTzResolution,
+                         boolean zoneRulesProviderAvailable) {
         this.timeZoneLoader = TimeZoneLoader.getInstance(resourcePrefix);
         timezones = new ConcurrentHashMap<>();
         zoneRules = new ConcurrentHashMap<>();
         zoneIds = new HashMap<>();
         this.lenientTzResolution = lenientTzResolution;
+        this.zoneRulesProviderAvailable = zoneRulesProviderAvailable;
     }
 
     /**
@@ -148,22 +183,56 @@ public class TimeZoneRegistryImpl implements TimeZoneRegistry {
      */
     @Override
     public final void register(final TimeZone timezone, boolean update) {
+        var registered = timezone;
         if (update) {
             try {
                 // load any available updates for the timezone..
-                timezones.put(timezone.getID(), new TimeZone(timeZoneLoader.loadVTimeZone(timezone.getID())));
+                final var updated = timeZoneLoader.loadVTimeZone(timezone.getID());
+                if (updated != null) {
+                    registered = new TimeZone(updated);
+                }
             } catch (IOException | ParserException e) {
                 var log = LoggerFactory.getLogger(TimeZoneRegistryImpl.class);
                 log.warn("Error occurred loading VTimeZone", e);
             }
-        } else {
-            timezones.put(timezone.getID(), timezone);
+        }
+        timezones.put(timezone.getID(), registered);
+
+        if (!zoneRulesProviderAvailable) {
+            // fallback mode: no provider can resolve a synthetic zone id, so keep the definition only and
+            // let TZIDs resolve to platform zones via TimeZoneRegistry.getGlobalZoneId
+            return;
+        }
+
+        // RFC 5545 §3.6.5 requires at least one observance, but a definition without any has nothing to build
+        // zone rules from. It is kept so getTimeZone(id) and calendar output still see it, and TZIDs referencing
+        // it resolve through TimeZoneRegistry.getGlobalZoneId instead (see TzId.toZoneId) - issue #531..
+        var vTimeZone = registered.getVTimeZone();
+        if (vTimeZone.getObservances().isEmpty()) {
+            LoggerFactory.getLogger(TimeZoneRegistryImpl.class).warn(
+                    "VTIMEZONE [{}] has no STANDARD or DAYLIGHT observance; definition retained without zone rules",
+                    timezone.getID());
+            return;
         }
 
         // use latest timezone definition to build zone rules..
-        var newZoneRules = new ZoneRulesBuilder().vTimeZone(timezones.get(timezone.getID()).getVTimeZone())
-                .build();
-        var globalId = ZoneRulesProviderImpl.INSTANCE.getZoneIdPool().allocate(this);
+        ZoneRules newZoneRules;
+        try {
+            newZoneRules = new ZoneRulesBuilder().vTimeZone(vTimeZone).build();
+        } catch (RuntimeException e) {
+            // e.g. an observance without DTSTART (issues #847, #750). Under relaxed parsing or validation keep the
+            // definition without zone rules, as above; otherwise fail fast but name the offending definition..
+            if (CompatibilityHints.isHintEnabled(CompatibilityHints.KEY_RELAXED_PARSING)
+                    || CompatibilityHints.isHintEnabled(CompatibilityHints.KEY_RELAXED_VALIDATION)) {
+                LoggerFactory.getLogger(TimeZoneRegistryImpl.class).warn(
+                        "Unable to build zone rules for VTIMEZONE [{}]: {}; definition retained without zone rules",
+                        timezone.getID(), e.getMessage());
+                return;
+            }
+            throw new IllegalArgumentException(String.format("Unable to build zone rules for VTIMEZONE [%s]: %s",
+                    timezone.getID(), e.getMessage()), e);
+        }
+        var globalId = ZoneRulesProviderImpl.getInstance().orElseThrow().getZoneIdPool().allocate(this);
         zoneIds.put(globalId, timezone.getID());
         zoneRules.put(globalId, newZoneRules);
     }
@@ -180,7 +249,7 @@ public class TimeZoneRegistryImpl implements TimeZoneRegistry {
      * {@inheritDoc}
      */
     @Override
-    public final TimeZone getTimeZone(final String id) {
+    public final @Nullable TimeZone getTimeZone(final String id) {
         var timezone = timezones.get(id);
         if (timezone == null) {
             /* A blank TZID is only invalid if it is not declared under the
@@ -231,13 +300,16 @@ public class TimeZoneRegistryImpl implements TimeZoneRegistry {
 
     @Override
     public ZoneId getZoneId(String tzId) {
+        if (!zoneRulesProviderAvailable) {
+            return TimeZoneRegistry.getGlobalZoneId(tzId);
+        }
         return ZoneId.of(zoneIds.entrySet().stream().filter(entry -> entry.getValue().equals(tzId))
                 .findFirst().orElseThrow(() -> new DateTimeException(String.format("Unknown timezone identifier [%s]", tzId))).getKey(),
                 TimeZoneRegistry.ZONE_ALIASES);
     }
 
     @Override
-    public String getTzId(String zoneId) {
+    public @Nullable String getTzId(String zoneId) {
         return zoneIds.get(zoneId);
     }
 }

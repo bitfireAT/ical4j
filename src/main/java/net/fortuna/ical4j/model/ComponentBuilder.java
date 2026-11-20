@@ -1,5 +1,6 @@
 package net.fortuna.ical4j.model;
 
+import java.util.Locale;
 import net.fortuna.ical4j.model.component.XComponent;
 
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ public class ComponentBuilder<T extends Component> extends AbstractContentBuilde
 
     private final List<ComponentFactory<?>> factories;
 
+    @SuppressWarnings("NullAway.Init") // must be set before build()
     private String name;
 
     private final List<Property> properties = new ArrayList<>();
@@ -41,12 +43,13 @@ public class ComponentBuilder<T extends Component> extends AbstractContentBuilde
 
     public ComponentBuilder<?> name(String name) {
         // component names are case-insensitive, but convert to upper case to simplify further processing
-        this.name = name.toUpperCase();
+        this.name = name.toUpperCase(Locale.ROOT);
         return this;
     }
 
     public boolean hasName(String name) {
-        return name.equals(this.name);
+        // component names are case-insensitive (RFC 5545 §3.1); this.name is stored upper-cased
+        return name.equalsIgnoreCase(this.name);
     }
 
     public ComponentBuilder<?> property(Property property) {

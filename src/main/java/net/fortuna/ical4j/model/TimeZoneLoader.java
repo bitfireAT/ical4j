@@ -10,10 +10,13 @@ import net.fortuna.ical4j.util.Configurator;
 import net.fortuna.ical4j.util.ResourceLoader;
 import net.fortuna.ical4j.util.TimeZoneCache;
 import org.apache.commons.lang3.Validate;
+import org.jspecify.annotations.Nullable;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Period;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
@@ -70,18 +73,24 @@ public class TimeZoneLoader {
     }
 
     public String[] getAvailableIDs() {
-        return new BufferedReader(new InputStreamReader(
-                ResourceLoader.getResourceAsStream(resourcePrefix + "tz.availableIds")))
-                .lines().toArray(String[]::new);
+        try (var reader = new BufferedReader(new InputStreamReader(
+                ResourceLoader.getResourceAsStream(resourcePrefix + "tz.availableIds"), StandardCharsets.UTF_8))) {
+            return reader.lines().toArray(String[]::new);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /**
      * Loads an existing VTimeZone from the classpath corresponding to the specified Java timezone.
      */
-    public VTimeZone loadVTimeZone(String id) throws IOException, ParserException {
+    public @Nullable VTimeZone loadVTimeZone(String id) throws IOException, ParserException {
         Validate.notBlank(id, "Invalid TimeZone ID: [%s]", id);
         return cache.getTimezone(id, () -> {
-            final var resource = ResourceLoader.getResource(resourcePrefix + id + ".ics");
+            // the id is untrusted (it typically originates from a parsed TZID) and is used to build a
+            // classpath resource path, so reject any value that could traverse outside resourcePrefix..
+            final var resource = isResolvableId(id)
+                    ? ResourceLoader.getResource(resourcePrefix + id + ".ics") : null;
             if (resource != null) {
                 try (var in = resource.openStream()) {
                     final var builder = new CalendarBuilder();
@@ -97,7 +106,25 @@ public class TimeZoneLoader {
         });
     }
 
-    private static VTimeZone generateTimezoneForId(String timezoneId) {
+    /**
+     * A timezone id is concatenated with resourcePrefix to locate a bundled definition on the
+     * classpath, so a crafted id such as {@code ../../secret} would otherwise resolve a resource
+     * outside the intended zoneinfo location. Valid IANA identifiers never contain parent-directory
+     * segments, backslashes or a leading separator, so reject those to keep resolution contained.
+     */
+    private static boolean isResolvableId(String id) {
+        if (id.indexOf('\\') >= 0 || id.startsWith("/")) {
+            return false;
+        }
+        for (String segment : id.split("/")) {
+            if (segment.equals("..") || segment.equals(".")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static @Nullable VTimeZone generateTimezoneForId(String timezoneId) {
         if (!TIMEZONE_DEFINITIONS.contains(timezoneId)) {
             return null;
         }
@@ -159,7 +186,7 @@ public class TimeZoneLoader {
 
             weekdayIndexInMonth = weekdayIndexInMonth >= 3 ? weekdayIndexInMonth - allDaysOfWeek.size() : weekdayIndexInMonth;
 
-            var rruleText = String.format(RRULE_TPL, transitionRuleMonthValue, weekdayIndexInMonth, transitionRuleDayOfWeek.name().substring(0, 2));
+            var rruleText = transitionRuleText(transitionRuleMonthValue, weekdayIndexInMonth, transitionRuleDayOfWeek);
 
             var offsetFrom = new TzOffsetFrom(transitionRule.getOffsetBefore());
             var offsetTo = new TzOffsetTo(transitionRule.getOffsetAfter());
@@ -176,6 +203,14 @@ public class TimeZoneLoader {
 
             result.add(observance);
         }
+    }
+
+    /**
+     * Builds the RRULE text for a yearly transition rule. Always formatted with ASCII digits regardless of
+     * the default locale, as native-digit locales (e.g. fa, ar) would otherwise leak into generated content (#458).
+     */
+    static String transitionRuleText(int month, int weekdayIndexInMonth, DayOfWeek dayOfWeek) {
+        return String.format(Locale.US, RRULE_TPL, month, weekdayIndexInMonth, dayOfWeek.name().substring(0, 2));
     }
 
     private static void addTransitions(ZoneId zoneId, VTimeZone result, int rawTimeZoneOffsetInSeconds) {
@@ -224,11 +259,7 @@ public class TimeZoneLoader {
     }
 
     public static TimeZoneLoader getInstance(String resourcePrefix) {
-        var loader = LOADER_MAP.get(resourcePrefix);
-        if (loader == null) {
-            LOADER_MAP.put(resourcePrefix, new TimeZoneLoader(resourcePrefix));
-        }
-        return LOADER_MAP.get(resourcePrefix);
+        return LOADER_MAP.computeIfAbsent(resourcePrefix, TimeZoneLoader::new);
     }
 
     private static class ZoneOffsetKey {

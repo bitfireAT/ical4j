@@ -9,6 +9,7 @@ import net.fortuna.ical4j.model.property.RRule;
 import net.fortuna.ical4j.model.property.TzOffsetFrom;
 import net.fortuna.ical4j.model.property.TzOffsetTo;
 import net.fortuna.ical4j.util.CompatibilityHints;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -31,7 +32,7 @@ import static net.fortuna.ical4j.model.Property.TZOFFSETFROM;
  */
 public class ZoneRulesBuilder {
 
-    private VTimeZone vTimeZone;
+    private @Nullable VTimeZone vTimeZone;
 
     public ZoneRulesBuilder vTimeZone(VTimeZone vTimeZone) {
         this.vTimeZone = vTimeZone;
@@ -155,22 +156,22 @@ public class ZoneRulesBuilder {
     private List<ZoneOffsetTransitionRule> buildTransitionRules(List<Observance> observances, ZoneOffset standardOffset) throws ConstraintViolationException {
         List<ZoneOffsetTransitionRule> transitionRules = new ArrayList<>();
 
-        // If every applicable observance carries an RRULE whose UNTIL is already in the past, the
-        // zone has truly abolished recurring DST (e.g. Asia/Tokyo 1948-1951, Asia/Shanghai
-        // 1986-1991). Skip building any future transition rules so we don't resurrect historical
-        // DST as a forever-yearly rule. Zones whose pristine VTIMEZONE only has an RRULE on one
-        // of STANDARD/DAYLIGHT (e.g. Australia/Darwin, America/Sao_Paulo) fall through unchanged,
-        // since the pristine code relies on the single-sided phantom rule to compensate for a
-        // separate UNTIL-comparison limitation in buildDSTTransitions.
+        // If every observance that would produce a transition rule below carries an RRULE whose UNTIL is
+        // already in the past, the zone has abolished recurring DST (e.g. Asia/Tokyo 1948-1951,
+        // Europe/Moscow 2011, America/Costa_Rica 1992). Skip building any future transition rules so
+        // historical DST isn't projected forever as a yearly rule.
+        //
+        // Observances that don't produce a rule (no RRULE, as with a single RDATE or DTSTART; an RRULE
+        // without BYMONTH; or no change in offset) have nothing to expire, so they're left out of the
+        // check. Counting them as "not expired" kept the expired rule alive whenever one sat beside an
+        // RRULE-less observance, which left those zones an hour ahead all or part of every year (#903).
         Instant now = Instant.now();
-        boolean allExpired = !observances.isEmpty() && observances.stream().allMatch(obs -> {
-            Optional<RRule<?>> r = obs.getProperty(Property.RRULE);
-            if (r.isEmpty() || r.get().getRecur().getMonthList().isEmpty()) {
-                return false;
-            }
-            Temporal until = r.get().getRecur().getUntil();
-            return until != null && TemporalComparator.INSTANCE.compare(now, until) > 0;
-        });
+        boolean allExpired = observances.stream().filter(ZoneRulesBuilder::producesTransitionRule)
+                .allMatch(obs -> {
+                    RRule<?> rrule = obs.getRequiredProperty(Property.RRULE);
+                    Temporal until = rrule.getRecur().getUntil();
+                    return until != null && TemporalComparator.INSTANCE.compare(now, until) > 0;
+                });
         if (allExpired) {
             return transitionRules;
         }
@@ -182,8 +183,7 @@ public class ZoneRulesBuilder {
             DtStart<LocalDateTime> startDate = observance.getRequiredProperty(Property.DTSTART);
 
             // ignore invalid rules and no-effect transitions (mirrors buildDSTTransitions)
-            if (rrule.isPresent() && !rrule.get().getRecur().getMonthList().isEmpty()
-                    && !offsetFrom.getOffset().equals(offsetTo.getOffset())) {
+            if (rrule.isPresent() && producesTransitionRule(observance)) {
                 var recur = rrule.get().getRecur();
                 var recurMonth = java.time.Month.of(recur.getMonthList().get(0).getMonthOfYear());
 
@@ -194,10 +194,12 @@ public class ZoneRulesBuilder {
                 int dayOfMonth;
                 java.time.DayOfWeek dayOfWeek;
                 if (!recur.getDayList().isEmpty()) {
-                    dayOfMonth = recur.getDayList().get(0).getOffset();
-                    if (dayOfMonth == 0) {
+                    int ordinal = recur.getDayList().get(0).getOffset();
+                    if (ordinal == 0) {
                         dayOfMonth = recur.getMonthDayList().isEmpty()
                                 ? startDate.getDate().getDayOfMonth() : recur.getMonthDayList().get(0);
+                    } else {
+                        dayOfMonth = dayOfMonthIndicator(ordinal);
                     }
                     dayOfWeek = WeekDay.getDayOfWeek(recur.getDayList().get(0));
                 } else if (!recur.getMonthDayList().isEmpty()) {
@@ -220,17 +222,70 @@ public class ZoneRulesBuilder {
         return transitionRules;
     }
 
+    /**
+     * Decides whether an observance yields a yearly {@link ZoneOffsetTransitionRule} in
+     * {@link #buildTransitionRules}: it needs an RRULE with a BYMONTH, and an actual change of offset.
+     * Missing offset properties are treated as "no rule" rather than raising an error here; the rule
+     * builder still reports them when it reads the observance.
+     *
+     * @param observance a STANDARD or DAYLIGHT observance
+     * @return true if the observance contributes a transition rule, otherwise false
+     */
+    private static boolean producesTransitionRule(Observance observance) {
+        Optional<RRule<?>> rrule = observance.getProperty(Property.RRULE);
+        Optional<TzOffsetFrom> offsetFrom = observance.getProperty(Property.TZOFFSETFROM);
+        Optional<TzOffsetTo> offsetTo = observance.getProperty(Property.TZOFFSETTO);
+        return rrule.isPresent() && !rrule.get().getRecur().getMonthList().isEmpty()
+                && offsetFrom.isPresent() && offsetTo.isPresent()
+                && !offsetFrom.get().getOffset().equals(offsetTo.get().getOffset());
+    }
+
+    /**
+     * Translates an RFC5545 BYDAY ordinal (the {@code 2} in {@code 2SU}) to the day-of-month
+     * indicator expected by {@link ZoneOffsetTransitionRule#of}.
+     * <p>
+     * When that factory is given a non-null day-of-week the indicator is not an ordinal. A positive
+     * value selects the first matching weekday on or after that day-of-month; a negative value is
+     * counted back from the end of the month, where {@code -1} is the last day, and selects the last
+     * matching weekday on or before it. Passing the ordinal through unchanged therefore reads
+     * {@code 2SU} as "the first Sunday on or after the 2nd", which can be a week early.
+     * <p>
+     * The nth weekday from the start of a month always falls within {@code [(n-1)*7+1, (n-1)*7+7]},
+     * so anchoring at {@code (n-1)*7+1} selects exactly the nth. By symmetry the nth weekday from the
+     * end always falls within the seven days ending at {@code -((n-1)*7+1)}, so anchoring there
+     * selects exactly the nth from the end. {@code -1} maps to itself, which is why zones using
+     * {@code -1SU} were unaffected.
+     * <p>
+     * Ordinals past the fourth week ({@code 5SU}, {@code -5SU}) are clamped to {@code 28} and
+     * {@code -28}, days that exist in every month, including a 28-day February, so
+     * {@link ZoneOffsetTransitionRule#createTransition} never throws. When the month has a fifth such
+     * weekday these anchors select it exactly. When it does not, the result is an approximation: it
+     * falls on the fourth weekday or in the adjacent month (for example {@code 5SU} in February 2026
+     * resolves to 1 March).
+     *
+     * @param ordinal a non-zero BYDAY ordinal
+     * @return the equivalent day-of-month indicator
+     */
+    private static int dayOfMonthIndicator(int ordinal) {
+        int indicator = ordinal > 0 ? (ordinal - 1) * 7 + 1 : (ordinal + 1) * 7 - 1;
+        // past the fourth week (5SU, -5SU) clamp to +-28: -28 is the lowest indicator
+        // ZoneOffsetTransitionRule accepts, and 29 would not exist in a 28-day February
+        return Math.max(-28, Math.min(28, indicator));
+    }
+
     public ZoneRules build() throws ConstraintViolationException {
+        final VTimeZone timeZone = Objects.requireNonNull(vTimeZone, "vTimeZone");
         var now = Instant.now();
         var currentStandard = VTimeZone.getApplicableObservance(now,
-                vTimeZone.getComponents(Observance.STANDARD));
+                timeZone.getComponents(Observance.STANDARD));
 
         var currentDaylight = VTimeZone.getApplicableObservance(now,
-                vTimeZone.getComponents(Observance.DAYLIGHT));
+                timeZone.getComponents(Observance.DAYLIGHT));
 
         // if no standard time use daylight time..
         if (currentStandard == null) {
-            currentStandard = currentDaylight;
+            currentStandard = Objects.requireNonNull(currentDaylight,
+                    "VTIMEZONE has no observance applicable to the current time");
         }
 
         TzOffsetFrom offsetFrom = currentStandard.getRequiredProperty(Property.TZOFFSETFROM);
@@ -239,18 +294,18 @@ public class ZoneRulesBuilder {
         var standardOffset = offsetTo.getOffset();
         var wallOffset = offsetTo.getOffset();
 
-        List<Standard> stdObservances = vTimeZone.getComponents(Observance.STANDARD);
+        List<Standard> stdObservances = timeZone.getComponents(Observance.STANDARD);
         List<ZoneOffsetTransition> standardOffsetTransitions = buildStandardOffsetTransitions(stdObservances);
         Collections.sort(standardOffsetTransitions);
 
-        List<ZoneOffsetTransition> offsetTransitions = buildDSTTransitions(vTimeZone.getObservances());
+        List<ZoneOffsetTransition> offsetTransitions = buildDSTTransitions(timeZone.getObservances());
         Collections.sort(offsetTransitions);
 
         // only create transition rules from the latest definitions..
         // NOTE: order of transition rules is significant.. if currently in DST next transition should be
         // to standard time..
         List<Observance> latestObservances = new ArrayList<>();
-        if (vTimeZone.getApplicableObservance(now).equals(currentDaylight)) {
+        if (Objects.equals(timeZone.getApplicableObservance(now), currentDaylight)) {
             latestObservances.add(currentStandard);
             latestObservances.add(currentDaylight);
         } else {

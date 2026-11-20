@@ -39,12 +39,36 @@ import spock.lang.Specification
 
 import java.time.*
 import java.time.temporal.ChronoUnit
+import java.time.temporal.UnsupportedTemporalTypeException
 
 import static net.fortuna.ical4j.model.CalendarDateFormat.UTC_DATE_TIME_FORMAT
 
 class VEventSpec extends Specification {
 	
 	ContentBuilder builder = new ContentBuilder()
+
+	def 'repeated weekdays preserve the full event recurrence set'() {
+		given:
+		def text = [
+				'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Recurrence test//EN',
+				'BEGIN:VEVENT', 'UID:repeated-weekdays', 'DTSTAMP:20080101T000000Z',
+				'DTSTART:20080115T090000Z', 'RRULE:FREQ=WEEKLY;COUNT=12;BYDAY=TU,TH,TU',
+				'END:VEVENT', 'END:VCALENDAR', ''
+		].join('\r\n')
+		VEvent event = new CalendarBuilder().build(new StringReader(text)).components[0]
+		def period = new Period(OffsetDateTime.parse('2008-01-01T00:00:00Z'),
+				OffsetDateTime.parse('2009-01-01T00:00:00Z'))
+
+		when:
+		def starts = event.calculateRecurrenceSet(period).collect { it.start }.sort()
+
+		then:
+		starts == ['2008-01-15', '2008-01-17', '2008-01-22', '2008-01-24',
+				'2008-01-29', '2008-01-31', '2008-02-05', '2008-02-07',
+				'2008-02-12', '2008-02-14', '2008-02-19', '2008-02-21'].collect {
+			OffsetDateTime.parse("${it}T09:00:00Z")
+		}
+	}
 
 	def 'build event with location'() {
 		setup:
@@ -154,5 +178,53 @@ END:VCALENDAR\r\n'''
                 UTC_DATE_TIME_FORMAT.parse("20240101T110000Z"),
                 UTC_DATE_TIME_FORMAT.parse("20240101T120000Z")
         )).empty
+    }
+
+    def 'recurrence set of a date-time event over a date-only period (#736)'() {
+        given: 'a recurring date-time event'
+        def event = builder.vevent {
+            uid '1'
+            dtstamp()
+            dtstart '20140629T100000Z'
+            dtend '20140629T110000Z'
+            rrule 'FREQ=MONTHLY;COUNT=3'
+            summary 'Monthly'
+        }
+
+        when: 'the recurrence set is calculated over a period with DATE bounds'
+        def periods = event.calculateRecurrenceSet(new Period<>(LocalDate.parse('2014-06-29'), LocalDate.parse('2015-06-30')))
+
+        then: 'no exception is thrown and every instance is returned'
+        notThrown(UnsupportedTemporalTypeException)
+        periods.collect { Instant.from(it.start) }.sort() == [
+                Instant.parse('2014-06-29T10:00:00Z'),
+                Instant.parse('2014-07-29T10:00:00Z'),
+                Instant.parse('2014-08-29T10:00:00Z')]
+    }
+
+    def 'zero-duration event is included when the period starts at its start (#82)'() {
+        given: 'an event with no duration'
+        def event = builder.vevent {
+            uid '1'
+            dtstamp()
+            dtstart '20160520T200000Z'
+            dtend '20160520T200000Z'
+            summary 'Instant'
+        }
+
+        expect: 'the event is found when the query period starts exactly at its start'
+        event.calculateRecurrenceSet(new Period(
+                UTC_DATE_TIME_FORMAT.parse('20160520T200000Z'),
+                UTC_DATE_TIME_FORMAT.parse('20160520T210000Z'))).size() == 1
+
+        and: 'when the query period strictly contains it'
+        event.calculateRecurrenceSet(new Period(
+                UTC_DATE_TIME_FORMAT.parse('20160520T190000Z'),
+                UTC_DATE_TIME_FORMAT.parse('20160520T210000Z'))).size() == 1
+
+        and: 'but not when the query period ends exactly at its start (half-open range)'
+        event.calculateRecurrenceSet(new Period(
+                UTC_DATE_TIME_FORMAT.parse('20160520T190000Z'),
+                UTC_DATE_TIME_FORMAT.parse('20160520T200000Z'))).empty
     }
 }

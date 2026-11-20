@@ -2,6 +2,7 @@ package net.fortuna.ical4j.transform.recurrence;
 
 import net.fortuna.ical4j.model.WeekDay;
 import net.fortuna.ical4j.model.WeekDayList;
+import org.jspecify.annotations.Nullable;
 
 import java.time.DayOfWeek;
 import java.time.Month;
@@ -11,7 +12,6 @@ import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -32,13 +32,14 @@ public class ByDayRule<T extends Temporal> extends AbstractDateExpansionRule<T> 
         this(seed, frequency, null);
     }
 
-    public ByDayRule(T seed, Frequency frequency, DayOfWeek firstDayOfWeek) {
+    public ByDayRule(T seed, Frequency frequency, @Nullable DayOfWeek firstDayOfWeek) {
         super(frequency);
         this.dayList = new WeekDayList(WeekDay.getWeekDay(getDayOfWeek(seed)));
         if (firstDayOfWeek != null) {
             weekFields = WeekFields.of(firstDayOfWeek, 1);
         } else {
-            weekFields = WeekFields.of(Locale.getDefault());
+            // RFC5545 3.3.10: the default value of WKST is MO
+            weekFields = WeekFields.of(DayOfWeek.MONDAY, 1);
         }
     }
 
@@ -46,13 +47,14 @@ public class ByDayRule<T extends Temporal> extends AbstractDateExpansionRule<T> 
         this(dayList, frequency, null);
     }
 
-    public ByDayRule(List<WeekDay> dayList, Frequency frequency, DayOfWeek firstDayOfWeek) {
+    public ByDayRule(List<WeekDay> dayList, Frequency frequency, @Nullable DayOfWeek firstDayOfWeek) {
         super(frequency);
         this.dayList = dayList;
         if (firstDayOfWeek != null) {
             weekFields = WeekFields.of(firstDayOfWeek, 1);
         } else {
-            weekFields = WeekFields.of(Locale.getDefault());
+            // RFC5545 3.3.10: the default value of WKST is MO
+            weekFields = WeekFields.of(DayOfWeek.MONDAY, 1);
         }
     }
 

@@ -31,6 +31,7 @@
  */
 package net.fortuna.ical4j.model.property;
 
+import java.util.Locale;
 import net.fortuna.ical4j.model.Content;
 import net.fortuna.ical4j.model.ParameterList;
 import net.fortuna.ical4j.model.Property;
@@ -63,6 +64,7 @@ public class Method extends Property {
     public static final String VALUE_COUNTER = "COUNTER";
     public static final String VALUE_DECLINECOUNTER = "DECLINECOUNTER";
 
+    @SuppressWarnings("NullAway.Init") // unset only via the no-arg constructor, see package-info
     private String value;
 
     /**
@@ -126,7 +128,7 @@ public class Method extends Property {
         public Method createProperty(final ParameterList parameters, final String value) {
 
             if (parameters.getAll().isEmpty()) {
-                switch (value.toUpperCase()) {
+                switch (value.toUpperCase(Locale.ROOT)) {
                     case VALUE_PUBLISH: return PUBLISH;
                     case VALUE_REQUEST: return REQUEST;
                     case VALUE_REPLY: return REPLY;

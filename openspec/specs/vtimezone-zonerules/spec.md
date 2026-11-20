@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the contract for `net.fortuna.ical4j.model.ZoneRulesBuilder` — deriving a `java.time.zone.ZoneRules` instance from a `net.fortuna.ical4j.model.component.VTimeZone`. Covers how observance `RRULE`s are translated into future `ZoneOffsetTransitionRule`s, including degenerate rules (e.g. non-DST zones emitted by Apple Calendar) that omit a weekday, which observances are ignored, and the guarantee that derivation does not depend on the JVM default time zone.
+Defines the contract for `net.fortuna.ical4j.model.ZoneRulesBuilder` — deriving a `java.time.zone.ZoneRules` instance from a `net.fortuna.ical4j.model.component.VTimeZone`. Covers how observance `RRULE`s are translated into future `ZoneOffsetTransitionRule`s, including how `BYDAY` ordinals map to day-of-month indicators, degenerate rules (e.g. non-DST zones emitted by Apple Calendar) that omit a weekday, which observances are ignored, when expired `RRULE`s stop producing future rules, and the guarantee that derivation does not depend on the JVM default time zone.
 
 ## Requirements
 
@@ -21,8 +21,6 @@ The system SHALL derive identical `java.time.zone.ZoneRules` from a given `VTime
 - **WHEN** an observance defines a DST start via `RRULE ... UNTIL=<UTC instant>` whose final occurrence lies on the `UNTIL` boundary
 - **THEN** the built `ZoneRules` either include both the matching DST start and its closing standard-time transition, or neither
 - **AND** the zone is not left in a daylight (offset-advanced) state after the last historical transition
-
-
 
 ### Requirement: Future transition rules from BYMONTH-only observance RRULEs
 
@@ -52,12 +50,75 @@ When building future transition rules, the system SHALL ignore observances whose
 - **THEN** no `ZoneOffsetTransitionRule` is generated for that observance
 - **AND** existing observances with differing offsets continue to generate transition rules unchanged
 
-### Requirement: Existing BYDAY-based transition rules unchanged
+### Requirement: BYDAY ordinals map to transition-rule day-of-month indicators
 
-The system SHALL continue to build transition rules for observances whose `RRULE` specifies a `BYDAY` part (e.g. `RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU`) exactly as before this change, including handling of ordinal weekday offsets and `BYMONTHDAY` fallback.
+When an observance `RRULE` specifies a `BYDAY` part, the system SHALL build a future transition rule whose day-of-week is that `BYDAY` weekday and whose `dayOfMonthIndicator` selects the weekday the ordinal denotes:
 
-#### Scenario: Standard DST rule with BYDAY still produces a weekday transition rule
+- For a positive ordinal *n* from 1 to 4, the indicator SHALL be `(n-1)*7 + 1`, which selects the *n*th such weekday of the month.
+- For a negative ordinal −*n* from −1 to −4, the indicator SHALL be `-((n-1)*7 + 1)`, which selects the *n*th-from-last such weekday of the month.
+- For an ordinal of 0 (a `BYDAY` weekday with no ordinal), the indicator SHALL be taken from the first `BYMONTHDAY` value if present, and otherwise from the observance `DTSTART` day-of-month, as before.
+- For ordinals of magnitude 5, the indicator SHALL be clamped to the range `-28..28`. Building SHALL NOT throw for these ordinals in any month, including February in a non-leap year. The resulting transition is an approximation. It is not guaranteed to fall on the 5th weekday, and in a short month it may fall in the adjacent month.
+
+Ordinals `1` and `-1` map to indicators `1` and `-1`, so rules using only them SHALL produce the same transition rules as before this requirement was introduced.
+
+#### Scenario: Last-Sunday rule is unchanged
 
 - **WHEN** an observance has `RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU` and differing from/to offsets
-- **THEN** the generated transition rule uses the last Sunday of March with the correct day-of-week constraint
-- **AND** the resulting `ZoneRules` matches the behavior prior to this change
+- **THEN** the generated transition rule has day-of-week `SUNDAY` and indicator `-1`
+- **AND** the resulting `ZoneRules` match those built before this requirement was introduced
+
+#### Scenario: Second-Sunday rule selects the second Sunday
+
+- **WHEN** an observance has `RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU` and differing from/to offsets
+- **THEN** the generated transition rule has day-of-week `SUNDAY` and indicator `8`
+- **AND** for every year the rule covers, the transition falls on the second Sunday of March, including years in which March 1 is not a Sunday (e.g. 2027), where the previous behaviour was a week early
+
+#### Scenario: US Eastern future transitions match tzdb
+
+- **WHEN** `ZoneRules` are built from a `VTimeZone` for `America/New_York` whose observances use `BYMONTH=3;BYDAY=2SU` and `BYMONTH=11;BYDAY=1SU`
+- **THEN** for each year from 2027 to 2040 the DST start and end instants equal those of `ZoneId.of("America/New_York").getRules()`
+
+#### Scenario: Ordinals from the end of the month
+
+- **WHEN** an observance has `BYDAY=-2SU`
+- **THEN** the generated transition rule has indicator `-8`
+- **AND** the transition falls on the second-to-last Sunday of the rule's month in every year
+
+#### Scenario: Plain BYDAY keeps the BYMONTHDAY fallback
+
+- **WHEN** an observance has `RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=SU;BYMONTHDAY=8,9,10,11,12,13,14`
+- **THEN** the generated transition rule has day-of-week `SUNDAY` and indicator `8`
+
+#### Scenario: Fifth-weekday ordinal in February does not throw
+
+- **WHEN** an observance has `RRULE:FREQ=YEARLY;BYMONTH=2;BYDAY=5SU` or `BYDAY=-5SU`
+- **THEN** `ZoneRules` are built without throwing
+- **AND** requesting transitions for any year, including non-leap years, does not throw
+
+### Requirement: Expired observance RRULEs are not projected as future transition rules
+
+When building future transition rules, the system SHALL consider only the observances that would produce a transition rule: those with an `RRULE` that has a `BYMONTH` part and whose `TZOFFSETFROM` offset differs from its `TZOFFSETTO` offset. If every such observance's `RRULE` has an `UNTIL` before the current instant, the system SHALL produce no future transition rules.
+
+An observance that would not produce a transition rule, such as one with no `RRULE` (only an `RDATE` or a single `DTSTART`), one whose `RRULE` has no `BYMONTH`, or one with equal `TZOFFSETFROM` and `TZOFFSETTO`, SHALL NOT cause an expired `RRULE` on another observance to be projected into the future.
+
+#### Scenario: Expired DAYLIGHT rule beside an RDATE-only STANDARD observance
+
+- **WHEN** `ZoneRules` are built from a `VTimeZone` whose latest DAYLIGHT observance has `RRULE:FREQ=YEARLY;BYMONTH=1;BYDAY=3SA;UNTIL=19920118T060000Z` and whose latest STANDARD observance has no `RRULE`, only `RDATE:19920315T000000` (the shape of `America/Costa_Rica`)
+- **THEN** no future transition rule is generated from the expired DAYLIGHT `RRULE`
+- **AND** the offset at `2026-07-01T12:00:00Z` is the standard offset, `-06:00`
+
+#### Scenario: Zones that abolished DST keep their standard offset all year
+
+- **WHEN** `ZoneRules` are built from the bundled definitions of `Europe/Moscow`, `America/Costa_Rica`, `America/Santo_Domingo`, `Australia/Darwin`, `America/Sao_Paulo` and `Europe/Istanbul`
+- **THEN** the offset on `2026-01-15T12:00:00Z` and on `2026-07-01T12:00:00Z` is, respectively, `+03:00`, `-06:00`, `-04:00`, `+09:30`, `-03:00` and `+03:00`
+
+#### Scenario: Zoned date-time output in a zone that abolished DST
+
+- **WHEN** a `DtStart` is created from `2026-10-25T12:00:00Z` at zone `Europe/Moscow`
+- **THEN** it is written as `DTSTART;TZID=Europe/Moscow:20261025T150000`
+
+#### Scenario: Active DST rules are unaffected
+
+- **WHEN** `ZoneRules` are built from a `VTimeZone` whose latest STANDARD and DAYLIGHT observances have `RRULE`s with no `UNTIL` (for example `America/Los_Angeles` or `Australia/Melbourne`)
+- **THEN** future transition rules are generated for both observances as before
+

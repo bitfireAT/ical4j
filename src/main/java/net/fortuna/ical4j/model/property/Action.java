@@ -31,6 +31,7 @@
  */
 package net.fortuna.ical4j.model.property;
 
+import java.util.Locale;
 import net.fortuna.ical4j.model.Content;
 import net.fortuna.ical4j.model.ParameterList;
 import net.fortuna.ical4j.model.Property;
@@ -58,6 +59,7 @@ public class Action extends Property {
     public static final String VALUE_EMAIL = "EMAIL";
     public static final String VALUE_PROCEDURE = "PROCEDURE";
 
+    @SuppressWarnings("NullAway.Init") // unset only via the no-arg constructor, see package-info
     private String value;
 
     /**
@@ -121,7 +123,7 @@ public class Action extends Property {
         public Action createProperty(final ParameterList parameters, final String value) {
 
             if (parameters.getAll().isEmpty()) {
-                switch (value.toUpperCase()) {
+                switch (value.toUpperCase(Locale.ROOT)) {
                     case VALUE_AUDIO: return AUDIO;
                     case VALUE_DISPLAY: return DISPLAY;
                     case VALUE_EMAIL: return EMAIL;

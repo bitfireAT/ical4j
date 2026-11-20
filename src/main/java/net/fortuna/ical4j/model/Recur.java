@@ -35,11 +35,13 @@ import net.fortuna.ical4j.transform.recurrence.*;
 import net.fortuna.ical4j.util.CompatibilityHints;
 import net.fortuna.ical4j.util.Configurator;
 import net.fortuna.ical4j.util.Enums;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.time.ZonedDateTime;
 import java.time.chrono.Chronology;
 import java.time.temporal.*;
 import java.util.*;
@@ -279,15 +281,15 @@ public class Recur<T extends Temporal> implements Serializable {
 
     private Frequency frequency;
 
-    private Skip skip;
+    private @Nullable Skip skip;
 
-    private TemporalAdapter<T> until;
+    private @Nullable TemporalAdapter<T> until;
 
-    private RScale rscale;
+    private @Nullable RScale rscale;
 
-    private Integer count;
+    private @Nullable Integer count;
 
-    private Integer interval;
+    private @Nullable Integer interval;
 
     private List<Integer> secondList = new NumberList(ChronoField.SECOND_OF_MINUTE.range(), false);
 
@@ -307,26 +309,27 @@ public class Recur<T extends Temporal> implements Serializable {
 
     private List<Integer> setPosList = new NumberList(ChronoField.DAY_OF_YEAR.range(), true);
 
-    private WeekDay weekStartDay;
+    private @Nullable WeekDay weekStartDay;
 
     private final Map<String, String> experimentalValues = new HashMap<String, String>();
 
     // Temporal field we increment based on frequency.
     private TemporalUnit calIncField;
 
-    private transient ByMonthRule<T> monthRule;
-    private transient ByWeekNoRule<T> weekNoRule;
-    private transient ByYearDayRule<T> yearDayRule;
-    private transient ByMonthDayRule<T> monthDayRule;
-    private transient ByDayRule<T> dayRule;
-    private transient ByHourRule<T> hourRule;
-    private transient ByMinuteRule<T> minuteRule;
-    private transient BySecondRule<T> secondRule;
-    private transient BySetPosRule<T> setPosRule;
+    private transient @Nullable ByMonthRule<T> monthRule;
+    private transient @Nullable ByWeekNoRule<T> weekNoRule;
+    private transient @Nullable ByYearDayRule<T> yearDayRule;
+    private transient @Nullable ByMonthDayRule<T> monthDayRule;
+    private transient @Nullable ByDayRule<T> dayRule;
+    private transient @Nullable ByHourRule<T> hourRule;
+    private transient @Nullable ByMinuteRule<T> minuteRule;
+    private transient @Nullable BySecondRule<T> secondRule;
+    private transient @Nullable BySetPosRule<T> setPosRule;
 
     /**
      * Default constructor.
      */
+    @SuppressWarnings("NullAway.Init") // frequency and calIncField are set by Builder.build()
     private Recur() {
     }
 
@@ -574,7 +577,7 @@ public class Recur<T extends Temporal> implements Serializable {
      *
      * @return leap month skip behaviour.
      */
-    public Skip getSkip() {
+    public @Nullable Skip getSkip() {
         return skip;
     }
 
@@ -588,14 +591,14 @@ public class Recur<T extends Temporal> implements Serializable {
     /**
      * @return Returns the until or null if there is none.
      */
-    public final T getUntil() {
+    public final @Nullable T getUntil() {
         return until != null ? until.getTemporal() : null;
     }
 
     /**
      * @return Returns the weekStartDay or null if there is none.
      */
-    public final WeekDay getWeekStartDay() {
+    public final @Nullable WeekDay getWeekStartDay() {
         return weekStartDay;
     }
 
@@ -604,7 +607,7 @@ public class Recur<T extends Temporal> implements Serializable {
      * @deprecated will be removed in a future version to support immutable pattern.
      */
     @Deprecated
-    public final void setWeekStartDay(final WeekDay weekStartDay) {
+    public final void setWeekStartDay(final @Nullable WeekDay weekStartDay) {
         this.weekStartDay = weekStartDay;
         if (frequency != null) {
             // May have to update calIncField
@@ -620,19 +623,19 @@ public class Recur<T extends Temporal> implements Serializable {
         return RecurFormatter.toString(this);
     }
 
-    RScale getRScale() {
+    @Nullable RScale getRScale() {
         return rscale;
     }
 
-    TemporalAdapter<T> getUntilAdapter() {
+    @Nullable TemporalAdapter<T> getUntilAdapter() {
         return until;
     }
 
-    Integer getCountValue() {
+    @Nullable Integer getCountValue() {
         return count;
     }
 
-    Integer getIntervalValue() {
+    @Nullable Integer getIntervalValue() {
         return interval;
     }
 
@@ -670,7 +673,7 @@ public class Recur<T extends Temporal> implements Serializable {
 
     /**
      * Returns a list of start dates in the specified period represented by this recur. This method includes a base date
-     * argument, which indicates the start of the fist occurrence of this recurrence. The base date is used to inject
+     * argument, which indicates the start of the first occurrence of this recurrence. The base date is used to inject
      * default values to return a set of dates in the correct format. For example, if the search start date (start) is
      * Wed, Mar 23, 12:19PM, but the recurrence is Mon - Fri, 9:00AM - 5:00PM, the start dates returned should all be at
      * 9:00AM, and not 12:19PM.
@@ -686,7 +689,7 @@ public class Recur<T extends Temporal> implements Serializable {
 
     /**
      * Returns a list of start dates in the specified period represented by this recur. This method includes a base date
-     * argument, which indicates the start of the fist occurrence of this recurrence. The base date is used to inject
+     * argument, which indicates the start of the first occurrence of this recurrence. The base date is used to inject
      * default values to return a set of dates in the correct format. For example, if the search start date (start) is
      * Wed, Mar 23, 12:19PM, but the recurrence is Mon - Fri, 9:00AM - 5:00PM, the start dates returned should all be at
      * 9:00AM, and not 12:19PM.
@@ -719,7 +722,7 @@ public class Recur<T extends Temporal> implements Serializable {
 
     /**
      * Returns the next date of this recurrence given a seed date
-     * and start date.  The seed date indicates the start of the fist
+     * and start date.  The seed date indicates the start of the first
      * occurrence of this recurrence. The start date is the
      * starting date to search for the next recurrence.  Return null
      * if there is no occurrence date after start date.
@@ -728,7 +731,7 @@ public class Recur<T extends Temporal> implements Serializable {
      * @param startDate the date to start the search
      * @return the next date in the recurrence series after startDate
      */
-    public final T getNextDate(final T seed, final T startDate) {
+    public final @Nullable T getNextDate(final T seed, final T startDate) {
         initRules();
 
         T candidateSeed = seed;
@@ -800,6 +803,11 @@ public class Recur<T extends Temporal> implements Serializable {
     /**
      * Returns a list of possible dates generated from the applicable BY* rules, using the specified date as a seed.
      *
+     * <p>For a {@link ZonedDateTime} seed, a candidate whose local date-time falls in a daylight-saving overlap
+     * (the hour that occurs twice when clocks go back) is resolved to the earlier offset, i.e. the offset in force
+     * before the transition, as required by RFC 5545 §3.3.5. This is applied here, once, because every candidate
+     * produced by the frequency increment and the BY* rules passes through this method.</p>
+     *
      * @param date  the seed date
      * @return a List of Temporal of the same type as the seed date
      */
@@ -841,8 +849,12 @@ public class Recur<T extends Temporal> implements Serializable {
                     && weekNoList.isEmpty() && dayList.isEmpty())) {
 
             List<Integer> implicitMonthDayList = new NumberList(ChronoField.DAY_OF_MONTH.range(), false);
-            // where seed doesn't provide timezone rules derive using system default timezone..
-            implicitMonthDayList.add(new TemporalAdapter<>(rootSeed).toLocalTime().getDayOfMonth());
+            // Prefer exact day from seed; fallback to system default timezone if date fields are unsupported (ex. Instant).
+            if (rootSeed.isSupported(ChronoField.DAY_OF_MONTH)) {
+                implicitMonthDayList.add(rootSeed.get(ChronoField.DAY_OF_MONTH));
+            } else {
+                implicitMonthDayList.add(new TemporalAdapter<>(rootSeed).toLocalTime().getDayOfMonth());
+            }
             ByMonthDayRule<T> implicitRule = new ByMonthDayRule<>(implicitMonthDayList, frequency, skip);
             dates = implicitRule.apply(dates);
         }
@@ -884,14 +896,41 @@ public class Recur<T extends Temporal> implements Serializable {
             }
         }
 
+        // Overlapping selectors must not shift BYSETPOS positions or consume COUNT twice.
+        dates = distinctCandidates(dates);
         if (setPosRule != null) {
-            dates = setPosRule.apply(dates);
+            // Different positions can select the same occurrence, such as 1 and -1 in a singleton set.
+            dates = distinctCandidates(setPosRule.apply(dates));
             // debugging..
             if (log.isDebugEnabled()) {
                 log.debug("Dates after SETPOS processing: " + dates);
             }
         }
+        if (rootSeed instanceof ZonedDateTime) {
+            dates = dates.stream().map(Recur::withEarlierOffsetAtOverlap).collect(Collectors.toList());
+        }
         dates.sort(CANDIDATE_SORTER);
+        return dates;
+    }
+
+    /**
+     * RFC 5545 §3.3.5: a local time that occurs twice at a DST transition denotes the first occurrence. java.time
+     * arithmetic on a {@link ZonedDateTime} ({@code plus}, {@code with}) prefers the offset of the value being
+     * adjusted, so a candidate derived from a seed carrying the post-transition offset would otherwise resolve to
+     * the later occurrence (issue #716).
+     */
+    @SuppressWarnings("unchecked")
+    private static <T extends Temporal> T withEarlierOffsetAtOverlap(final T candidate) {
+        if (candidate instanceof ZonedDateTime) {
+            return (T) ((ZonedDateTime) candidate).withEarlierOffsetAtOverlap();
+        }
+        return candidate;
+    }
+
+    private List<T> distinctCandidates(List<T> dates) {
+        if (dates.size() > 1) {
+            return dates.stream().distinct().collect(Collectors.toList());
+        }
         return dates;
     }
 
@@ -1029,37 +1068,37 @@ public class Recur<T extends Temporal> implements Serializable {
      */
     public static class Builder<T extends Temporal> {
 
-        private Frequency frequency;
+        private @Nullable Frequency frequency;
 
-        private Skip skip;
+        private @Nullable Skip skip;
 
-        private T until;
+        private @Nullable T until;
 
-        private RScale rscale;
+        private @Nullable RScale rscale;
 
-        private Integer count;
+        private @Nullable Integer count;
 
-        private Integer interval;
+        private @Nullable Integer interval;
 
-        private List<Integer> secondList;
+        private @Nullable List<Integer> secondList;
 
-        private List<Integer> minuteList;
+        private @Nullable List<Integer> minuteList;
 
-        private List<Integer> hourList;
+        private @Nullable List<Integer> hourList;
 
-        private List<WeekDay> dayList;
+        private @Nullable List<WeekDay> dayList;
 
-        private List<Integer> monthDayList;
+        private @Nullable List<Integer> monthDayList;
 
-        private List<Integer> yearDayList;
+        private @Nullable List<Integer> yearDayList;
 
-        private List<Integer> weekNoList;
+        private @Nullable List<Integer> weekNoList;
 
-        private List<Month> monthList;
+        private @Nullable List<Month> monthList;
 
-        private List<Integer> setPosList;
+        private @Nullable List<Integer> setPosList;
 
-        private WeekDay weekStartDay;
+        private @Nullable WeekDay weekStartDay;
 
         public Builder() {
         }
@@ -1093,27 +1132,27 @@ public class Recur<T extends Temporal> implements Serializable {
             return this;
         }
 
-        public Builder<T> skip(Skip skip) {
+        public Builder<T> skip(@Nullable Skip skip) {
             this.skip = skip;
             return this;
         }
 
-        public Builder<T> until(T until) {
+        public Builder<T> until(@Nullable T until) {
             this.until = until;
             return this;
         }
 
-        public Builder<T> rscale(RScale rscale) {
+        public Builder<T> rscale(@Nullable RScale rscale) {
             this.rscale = rscale;
             return this;
         }
 
-        public Builder<T> count(Integer count) {
+        public Builder<T> count(@Nullable Integer count) {
             this.count = count;
             return this;
         }
 
-        public Builder<T> interval(Integer interval) {
+        public Builder<T> interval(@Nullable Integer interval) {
             this.interval = interval;
             return this;
         }
@@ -1199,7 +1238,7 @@ public class Recur<T extends Temporal> implements Serializable {
             return this;
         }
 
-        public Builder<T> weekStartDay(WeekDay weekStartDay) {
+        public Builder<T> weekStartDay(@Nullable WeekDay weekStartDay) {
             this.weekStartDay = weekStartDay;
             return this;
         }
@@ -1208,6 +1247,9 @@ public class Recur<T extends Temporal> implements Serializable {
             var chronology = rscale != null ? Chronology.of(rscale.getChronology())
                     : Chronology.ofLocale(Locale.getDefault());
 
+            if (frequency == null) {
+                throw new IllegalArgumentException("A recurrence rule MUST contain a FREQ rule part.");
+            }
             Recur<T> recur = new Recur<>();
             recur.frequency = frequency;
             recur.rscale = rscale;

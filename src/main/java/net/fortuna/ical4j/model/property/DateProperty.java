@@ -36,12 +36,15 @@ import net.fortuna.ical4j.model.parameter.TzId;
 import net.fortuna.ical4j.model.parameter.Value;
 import net.fortuna.ical4j.util.CompatibilityHints;
 import net.fortuna.ical4j.util.Strings;
+import net.fortuna.ical4j.validate.ValidationEntry;
 import net.fortuna.ical4j.validate.ValidationException;
 import net.fortuna.ical4j.validate.ValidationResult;
 import net.fortuna.ical4j.validate.property.DatePropertyValidator;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.LoggerFactory;
 
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -84,14 +87,15 @@ public abstract class DateProperty<T extends Temporal> extends Property {
 
     private final Value defaultValueParam;
 
+    @SuppressWarnings("NullAway.Init") // unset only via the no-arg constructor, see package-info
     private TemporalAdapter<T> date;
 
-    private transient TimeZoneRegistry timeZoneRegistry;
+    private transient @Nullable TimeZoneRegistry timeZoneRegistry;
 
     /**
      *
      */
-    private ZoneId defaultTimeZone;
+    private @Nullable ZoneId defaultTimeZone;
 
     /**
      * @param name       the property name
@@ -151,13 +155,22 @@ public abstract class DateProperty<T extends Temporal> extends Property {
      *
      * @return Returns the date.
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "NullAway"}) // unset/cleared value, see package-info
     public T getDate() {
         if (date != null) {
             Optional<TzId> tzId = getParameter(Parameter.TZID);
             if (tzId.isPresent() && shouldApplyTimezone()) {
                 //xxx: type T should always be ZonedDateTime where TZID parameter is specified..
-                return (T) date.toLocalTime(tzId.get().toZoneId(timeZoneRegistry));
+                try {
+                    return (T) date.toLocalTime(tzId.get().toZoneId(timeZoneRegistry));
+                } catch (DateTimeException e) {
+                    // TZID resolved to no known zone. Under relaxed validation the value has been parsed as a
+                    // floating date-time (see TemporalAdapter#getTemporal); return it and ignore the TZID.
+                    if (CompatibilityHints.isHintEnabled(CompatibilityHints.KEY_RELAXED_VALIDATION)) {
+                        return date.getTemporal();
+                    }
+                    throw e;
+                }
             } else {
                 return date.getTemporal();
             }
@@ -172,7 +185,8 @@ public abstract class DateProperty<T extends Temporal> extends Property {
      *
      * @param date The date to set.
      */
-    public void setDate(T date) {
+    @SuppressWarnings("NullAway") // unset/cleared value, see package-info
+    public void setDate(@Nullable T date) {
         if (date != null) {
             this.date = new TemporalAdapter<>(date, timeZoneRegistry);
             refreshParameters();
@@ -191,7 +205,7 @@ public abstract class DateProperty<T extends Temporal> extends Property {
      * @param value a string representation of a DATE or DATE-TIME value
      */
     @Override
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "NullAway"}) // unset/cleared value, see package-info
     public void setValue(final String value) throws DateTimeParseException {
         // value can be either a date-time or a date..
         if (value != null && !value.isEmpty()) {
@@ -249,8 +263,22 @@ public abstract class DateProperty<T extends Temporal> extends Property {
     @Override
     public String getValue() {
         Optional<TzId> tzId = getParameter(Parameter.TZID);
-        if (tzId.isPresent() && shouldApplyTimezone()) {
-            return date.toString(tzId.get().toZoneId(timeZoneRegistry));
+        ZoneId zoneId = null;
+        if (tzId.isPresent()) {
+            try {
+                // shouldApplyTimezone() inspects the parsed value, which itself resolves the TZID
+                if (shouldApplyTimezone()) {
+                    zoneId = tzId.get().toZoneId(timeZoneRegistry);
+                }
+            } catch (DateTimeException e) {
+                // TZID resolved to no known zone: emit the value as parsed rather than fail, in every mode, so a
+                // calendar that parsed can always be written back. Typed access (getDate) and validate() still
+                // report the problem.
+                return date.getValueString();
+            }
+        }
+        if (zoneId != null) {
+            return date.toString(zoneId);
         } else if (this instanceof UtcProperty) {
             return date.toString(ZoneOffset.UTC);
         } else {
@@ -258,7 +286,7 @@ public abstract class DateProperty<T extends Temporal> extends Property {
         }
     }
 
-    public void setTimeZoneRegistry(TimeZoneRegistry timeZoneRegistry) {
+    public void setTimeZoneRegistry(@Nullable TimeZoneRegistry timeZoneRegistry) {
         this.timeZoneRegistry = timeZoneRegistry;
     }
 
@@ -298,7 +326,7 @@ public abstract class DateProperty<T extends Temporal> extends Property {
      * timezone the system default timezone will be used.
      * @param defaultTimeZone a timezone identifier
      */
-    public void setDefaultTimeZone(ZoneId defaultTimeZone) {
+    public void setDefaultTimeZone(@Nullable ZoneId defaultTimeZone) {
         this.defaultTimeZone = defaultTimeZone;
     }
 
@@ -329,7 +357,19 @@ public abstract class DateProperty<T extends Temporal> extends Property {
      */
     @Override
     public ValidationResult validate() throws ValidationException {
-        return new DatePropertyValidator<>().validate(this);
+        ValidationResult result = new DatePropertyValidator<>().validate(this);
+        // A TZID that resolves to no known zone is a structural error and is reported here, even though
+        // value access (getValue/getDate) tolerates it as a floating value under relaxed validation.
+        Optional<TzId> tzId = getParameter(Parameter.TZID);
+        if (tzId.isPresent() && shouldApplyTimezone()) {
+            try {
+                tzId.get().toZoneId(timeZoneRegistry);
+            } catch (DateTimeException e) {
+                result.getEntries().add(new ValidationEntry("Unresolvable TZID [" + tzId.get().getValue() + "]",
+                        ValidationEntry.Severity.ERROR, getName()));
+            }
+        }
+        return result;
     }
 
     @Override

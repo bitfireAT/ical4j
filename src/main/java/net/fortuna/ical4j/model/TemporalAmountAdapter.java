@@ -3,7 +3,6 @@ package net.fortuna.ical4j.model;
 import net.fortuna.ical4j.util.CompatibilityHints;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
-
 import java.io.Serializable;
 import java.time.Period;
 import java.time.*;
@@ -14,11 +13,21 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Support adapter for {@link java.time.temporal.TemporalAmount} representation in iCalendar format.
  */
 public class TemporalAmountAdapter implements Serializable {
+
+    // The relaxed patterns below are applied to untrusted property values. Possessive quantifiers and the
+    // lookbehind keep matching linear in the value length, where the plain forms backtrack quadratically or
+    // recurse once per repetition (StackOverflowError on long values).
+    private static final Pattern LENIENT_TIME_ONLY = Pattern.compile("P(?:[+-]?[0-9]*+[MHS])++");
+
+    private static final Pattern RELAXED_WEEKS_AND_DAYS = Pattern.compile("([+-])?P.[^W]*+W.[^D]*+D.*");
+
+    private static final Pattern RELAXED_DAYS_SUFFIX = Pattern.compile("(?<!\\d)\\d+D");
 
     private final TemporalAmount duration;
 
@@ -49,26 +58,23 @@ public class TemporalAmountAdapter implements Serializable {
     }
 
     /**
-     * As the {@link Period} implementation doesn't support string representation in weeks, but does support
-     * years and months, we need to generate a string that converts years, months and days to weeks.
+     * RFC 5545 §3.3.6 expresses a nominal duration either in weeks ({@code PnW}) or in days ({@code PnD}), and
+     * has no designators for years or months. A {@link Period} of years or months has no fixed length, so it is
+     * anchored to the seed: the number of calendar days between the seed and {@code seed.plus(period)} is rendered
+     * as weeks when it is an exact multiple of seven, and as days otherwise. Truncating to whole weeks would lose
+     * up to six days (issue #419).
      *
      * @param period a period instance
+     * @param seed the temporal the period is applied to
      * @return a string representation of the period that is compliant with the RFC5545 specification.
      */
     private String periodToString(Period period, Temporal seed) {
         String retVal;
         var adjustedSeed = seed.plus(period);
-        if (period.getYears() != 0) {
-            long weeks = Math.abs(seed.until(adjustedSeed, ChronoUnit.WEEKS));
-            retVal = String.format(Locale.US, "P%dW", weeks);
-        } else if (period.getMonths() != 0) {
-            long weeks = Math.abs(seed.until(adjustedSeed, ChronoUnit.WEEKS));
-            retVal = String.format(Locale.US, "P%dW", weeks);
-        } else if (period.getDays() % 7 == 0) {
-            long weeks = Math.abs(seed.until(adjustedSeed, ChronoUnit.WEEKS));
-            retVal = String.format(Locale.US, "P%dW", weeks);
+        long days = Math.abs(seed.until(adjustedSeed, ChronoUnit.DAYS));
+        if (days % 7 == 0) {
+            retVal = String.format(Locale.US, "P%dW", days / 7);
         } else {
-            long days = Math.abs(seed.until(adjustedSeed, ChronoUnit.DAYS));
             retVal = String.format(Locale.US, "P%dD", days);
         }
         if (period.isNegative() && !retVal.startsWith("-")) {
@@ -86,7 +92,7 @@ public class TemporalAmountAdapter implements Serializable {
      * @return a string representation of the duration that is compliant with the RFC5545 specification.
      */
     private String durationToString(Duration duration, Temporal seed) {
-        String retVal = null;
+        String retVal;
         var absDuration = duration.abs();
         var adjustedSeed = seed.plus(absDuration);
         long days = 0;
@@ -95,34 +101,29 @@ public class TemporalAmountAdapter implements Serializable {
         }
 
         if (days != 0) {
-            var durationMinusDays = absDuration.minusDays(days);
-            if (durationMinusDays.getSeconds() != 0) {
-                adjustedSeed = seed.plus(durationMinusDays);
-                long hours = seed.until(adjustedSeed, ChronoUnit.HOURS);
+            // measure the remainder from the seed plus whole calendar days, as a calendar day is not always
+            // 24 hours (e.g. across a daylight saving transition)..
+            var remainder = Duration.between(seed.plus(days, ChronoUnit.DAYS), adjustedSeed);
+            long hours = remainder.toHours();
+            long minutes = remainder.toMinutesPart();
+            long seconds = remainder.toSecondsPart();
 
-                adjustedSeed = seed.plus(durationMinusDays.minusHours(hours));
-                long minutes = seed.until(adjustedSeed, ChronoUnit.MINUTES);
-
-                adjustedSeed = seed.plus(durationMinusDays.minusHours(hours).minusMinutes(minutes));
-                long seconds = seed.until(adjustedSeed, ChronoUnit.SECONDS);
-
-                if (hours > 0) {
-                    if (seconds > 0) {
-                        retVal = String.format(Locale.US, "P%dDT%dH%dM%dS", days, hours, minutes, seconds);
-                    } else if (minutes > 0) {
-                        retVal = String.format(Locale.US, "P%dDT%dH%dM", days, hours, minutes);
-                    } else {
-                        retVal = String.format(Locale.US, "P%dDT%dH", days, hours);
-                    }
+            if (hours > 0) {
+                if (seconds > 0) {
+                    retVal = String.format(Locale.US, "P%dDT%dH%dM%dS", days, hours, minutes, seconds);
                 } else if (minutes > 0) {
-                    if (seconds > 0) {
-                        retVal = String.format(Locale.US, "P%dDT%dM%dS", days, minutes, seconds);
-                    } else {
-                        retVal = String.format(Locale.US, "P%dDT%dM", days, minutes);
-                    }
-                } else if (seconds > 0) {
-                    retVal = String.format(Locale.US, "P%dDT%dS", days, seconds);
+                    retVal = String.format(Locale.US, "P%dDT%dH%dM", days, hours, minutes);
+                } else {
+                    retVal = String.format(Locale.US, "P%dDT%dH", days, hours);
                 }
+            } else if (minutes > 0) {
+                if (seconds > 0) {
+                    retVal = String.format(Locale.US, "P%dDT%dM%dS", days, minutes, seconds);
+                } else {
+                    retVal = String.format(Locale.US, "P%dDT%dM", days, minutes);
+                }
+            } else if (seconds > 0) {
+                retVal = String.format(Locale.US, "P%dDT%dS", days, seconds);
             } else {
                 retVal = String.format(Locale.US, "P%dD", days);
             }
@@ -158,11 +159,11 @@ public class TemporalAmountAdapter implements Serializable {
         }
         else if (value.matches("([+-])?P.*(W|D)")) {
             retVal = java.time.Period.parse(value);
-        } else if (lenient && value.matches("P([+-]?[0-9]*[MHS])+")) {
+        } else if (lenient && LENIENT_TIME_ONLY.matcher(value).matches()) {
             retVal = java.time.Duration.parse("PT" + value.substring(1));
         } else if (CompatibilityHints.isHintEnabled(CompatibilityHints.KEY_RELAXED_PARSING) &&
-            value.matches("([+-])?P.+W.+D.*")) {
-            var split = value.split("\\d+D");
+            RELAXED_WEEKS_AND_DAYS.matcher(value).matches()) {
+            var split = RELAXED_DAYS_SUFFIX.split(value);
             retVal = java.time.Period.parse(split[0]);
         } else {
             retVal = java.time.Duration.parse(value);

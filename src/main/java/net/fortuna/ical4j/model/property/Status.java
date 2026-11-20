@@ -31,6 +31,7 @@
  */
 package net.fortuna.ical4j.model.property;
 
+import java.util.Locale;
 import net.fortuna.ical4j.model.Content;
 import net.fortuna.ical4j.model.ParameterList;
 import net.fortuna.ical4j.model.Property;
@@ -138,6 +139,7 @@ public class Status extends Property {
 
     // Status values for "VJOURNAL"
 
+    @SuppressWarnings("NullAway.Init") // unset only via the no-arg constructor, see package-info
     private String value;
 
     /**
@@ -201,7 +203,7 @@ public class Status extends Property {
         public Status createProperty(final ParameterList parameters, final String value) {
 
             if (parameters.getAll().isEmpty()) {
-                switch (value.toUpperCase()) {
+                switch (value.toUpperCase(Locale.ROOT)) {
                     case VALUE_TENTATIVE: return VEVENT_TENTATIVE;
                     case VALUE_CONFIRMED: return VEVENT_CONFIRMED;
                     case VALUE_CANCELLED: return VEVENT_CANCELLED;
